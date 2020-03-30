@@ -29,8 +29,13 @@
 
 #import "SFNetwork.h"
 #import "SalesforceSDKManager.h"
+#import <SalesforceSDKCommon/SFSDKSafeMutableDictionary.h>
 
-@interface SFNetwork()
+NSString * const kSFNetworkEphemeralInstanceIdentifier = @"com.salesforce.network.ephemeralSession";
+NSString * const kSFNetworkBackgroundInstanceIdentifier = @"com.salesforce.network.backgroundSession";
+static SFSDKSafeMutableDictionary *sharedInstances = nil;
+
+@interface SFNetwork()<NSURLSessionDelegate, NSURLSessionTaskDelegate>
 
 @property (nonatomic, readwrite, strong) NSURLSession *activeSession;
 
@@ -38,38 +43,42 @@
 
 @implementation SFNetwork
 
-static NSURLSessionConfiguration *kSFSessionConfig;
-__weak static id<SFNetworkSessionManaging> kSFNetworkManager;
-
-- (instancetype)initWithEphemeralSession {
-    self = [super init];
-    if (self) {
-        NSURLSessionConfiguration *ephemeralSessionConfig = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        if (kSFSessionConfig) {
-            ephemeralSessionConfig = kSFSessionConfig;
-        }
-        if (kSFNetworkManager) {
-            self.activeSession = [kSFNetworkManager ephemeralSession:ephemeralSessionConfig];
-        } else {
-            self.activeSession = [NSURLSession sessionWithConfiguration:ephemeralSessionConfig];
-        }
-    }
-    return self;
++ (instancetype)sharedEphemeralInstance {
+    return [SFNetwork sharedEphemeralInstanceWithIdentifier:kSFNetworkEphemeralInstanceIdentifier];
 }
 
-- (instancetype)initWithBackgroundSession {
++ (instancetype)sharedEphemeralInstanceWithIdentifier:(NSString *)identifier {
+    NSURLSessionConfiguration *sessionConfiguration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    return [SFNetwork sharedInstanceWithIdentifier:identifier sessionConfiguration:sessionConfiguration];
+}
+
++ (instancetype)sharedBackgroundInstance {
+    return [SFNetwork sharedBackgroundInstanceWithIdentifier:kSFNetworkBackgroundInstanceIdentifier];
+}
+
++ (instancetype)sharedBackgroundInstanceWithIdentifier:(NSString *)identifier {
+    NSURLSessionConfiguration *sessionConfiguration = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:identifier];
+    return [SFNetwork sharedInstanceWithIdentifier:identifier sessionConfiguration:sessionConfiguration];
+}
+
++ (instancetype)sharedInstanceWithIdentifier:(nonnull NSString *)identifier sessionConfiguration:(nonnull NSURLSessionConfiguration *)sessionConfiguration {
+    static dispatch_once_t pred;
+    dispatch_once(&pred, ^{
+        sharedInstances = [[SFSDKSafeMutableDictionary alloc] init];
+    });
+
+    SFNetwork *network = sharedInstances[identifier];
+    if (!network) {
+        network = [[self alloc] initWithSessionConfiguration:sessionConfiguration];
+        sharedInstances[identifier] = network;
+    }
+    return network;
+}
+
+- (instancetype)initWithSessionConfiguration:(NSURLSessionConfiguration *)sessionConfiguration  {
     self = [super init];
     if (self) {
-        NSString *identifier = [NSString stringWithFormat:@"com.salesforce.network.%lu", (unsigned long)self.hash];
-        NSURLSessionConfiguration *backgroundSessionConfig = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:identifier];
-        if (kSFSessionConfig) {
-            backgroundSessionConfig = kSFSessionConfig;
-        }
-        if (kSFNetworkManager) {
-            self.activeSession = [kSFNetworkManager backgroundSession:backgroundSessionConfig];
-        } else {
-            self.activeSession = [NSURLSession sessionWithConfiguration:backgroundSessionConfig];
-        }
+        _activeSession = [NSURLSession sessionWithConfiguration:sessionConfiguration delegate:self delegateQueue:nil];
     }
     return self;
 }
@@ -89,12 +98,61 @@ __weak static id<SFNetworkSessionManaging> kSFNetworkManager;
     return dataTask;
 }
 
-+ (void)setSessionConfiguration:(NSURLSessionConfiguration *)sessionConfig {
-    kSFSessionConfig = sessionConfig;
++ (void)setSessionConfiguration:(nonnull NSURLSessionConfiguration *)sessionConfig identifier:(nonnull NSString *)identifier {
+    [SFNetwork removeSharedInstanceForIdentifier:identifier];
+    [SFNetwork sharedInstanceWithIdentifier:identifier sessionConfiguration:sessionConfig];
 }
 
-+ (void)setSessionManager:(id<SFNetworkSessionManaging>)manager {
-    kSFNetworkManager = manager;
++ (NSArray *)sharedInstanceIdentifiers {
+    return [sharedInstances allKeys];
+}
+
++ (void)removeSharedEphemeralInstance {
+    [self removeSharedInstanceForIdentifier:kSFNetworkEphemeralInstanceIdentifier];
+}
+
++ (void)removeSharedBackgroundInstance {
+    [self removeSharedInstanceForIdentifier:kSFNetworkBackgroundInstanceIdentifier];
+}
+
++ (void)removeSharedInstanceForIdentifier:(nullable NSString *)identifier {
+    if (identifier) {
+        [sharedInstances removeObject:identifier];
+    }
+}
+
++ (void)removeAllSharedInstances {
+    [sharedInstances removeAllObjects];
+}
+
++ (NSString *)uniqueInstanceIdentifier  {
+    return [NSString stringWithFormat:@"com.salesforce.network.%@", [[NSUUID UUID] UUIDString]];
+}
+
+#pragma mark - NSURLSessionDelegate
+
+- (void)URLSession:(NSURLSession *)session didBecomeInvalidWithError:(nullable NSError *)error {
+    for (NSString *identifier in [sharedInstances allKeys]) {
+        SFNetwork *sharedInstance = sharedInstances[identifier];
+        if (session == sharedInstance.activeSession) {
+            [sharedInstances removeObject:identifier];
+        }
+    }
+}
+
+-(void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler {
+    if ([task.originalRequest valueForHTTPHeaderField:@"Authorization"]) {
+        // Don't auto follow redirects in authenticated case
+        completionHandler(nil);
+    } else {
+        completionHandler(request);
+    }
+}
+
+#pragma mark - Private
+// Getter for tests
++ (NSDictionary *)sharedInstances {
+    return [sharedInstances dictionary];
 }
 
 @end

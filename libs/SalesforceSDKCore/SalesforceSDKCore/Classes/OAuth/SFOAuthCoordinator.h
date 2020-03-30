@@ -22,50 +22,18 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <SafariServices/SafariServices.h>
+#import <AuthenticationServices/AuthenticationServices.h>
 #import <Security/Security.h>
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
 #import "SFOAuthCredentials.h"
-
+#import "SFSDKOAuth2.h"
 NS_ASSUME_NONNULL_BEGIN
 
 @class SFOAuthCoordinator;
 @class SFOAuthInfo;
 
-/** SFOAuth default network timeout in seconds.
- */
-extern const NSTimeInterval kSFOAuthDefaultTimeout;
 
-/** This constant defines the SFOAuth framework error domain.
- 
- Domain indicating an error occurred during OAuth authentication.
- */
-extern NSString * const kSFOAuthErrorDomain;
-
-/** 
- @enum SFOAuthErrorDomain related error codes
- Constants used by SFOAuthCoordinator to indicate errors in the SFOAuth domain
- */
-enum {
-    kSFOAuthErrorUnknown = 666,
-    kSFOAuthErrorTimeout,
-    kSFOAuthErrorMalformed,
-    kSFOAuthErrorAccessDenied,              // end user denied authorization
-    kSFOAuthErrorInvalidClientId,
-    kSFOAuthErrorInvalidClientCredentials,  // client secret invalid
-    kSFOAuthErrorInvalidGrant,              // expired access/refresh token, or IP restricted, or invalid login hours
-    kSFOAuthErrorInvalidRequest,
-    kSFOAuthErrorInactiveUser,
-    kSFOAuthErrorInactiveOrg,
-    kSFOAuthErrorRateLimitExceeded,
-    kSFOAuthErrorUnsupportedResponseType,
-    kSFOAuthErrorWrongVersion,              // credentials do not match current Connected App version in the org
-    kSFOAuthErrorBrowserLaunchFailed,
-    kSFOAuthErrorUnknownAdvancedAuthConfig,
-    kSFOAuthErrorInvalidMDMConfiguration,
-    kSFOAuthErrorJWTInvalidGrant
-};
 
 /**
  Enumeration of different advanced authentication stages.
@@ -242,14 +210,14 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  */
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithView:(WKWebView *)view;
 
-/** Sent after SFAuthenticationSession was initialized with authentication URL.
+/** Sent after ASWebAuthenticationSession was initialized with authentication URL.
  
  @param coordinator The SFOAuthCoordinator instance processing this message
- @param session     The SFAuthenticationSession instance that will be used to conduct the authentication workflow
+ @param session     The ASWebAuthenticationSession instance that will be used to conduct the authentication workflow
  
  @see SFOAuthCoordinator
  */
-- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithSession:(SFAuthenticationSession *)session;
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithSession:(ASWebAuthenticationSession *)session;
 
 /**
  Sent to notify the delegate that a browser authentication flow was cancelled out of by the user.
@@ -329,7 +297,7 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
 /**
  Auth session through which the user will input OAuth credentials for the user-agent flow OAuth process.
  */
-@property (nonatomic, readonly, null_unspecified) SFAuthenticationSession *authSession;
+@property (nonatomic, readonly, null_unspecified) ASWebAuthenticationSession *asWebAuthenticationSession;
 
 /**
  The user agent string that will be used for authentication.  While this property will persist throughout
@@ -357,6 +325,10 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
 /** Setup the coordinator to use SafariViewController for authentication.
  */
 @property (nonatomic, assign) BOOL useBrowserAuth;
+    
+/** Setup the coordinator to use SafariViewController for authentication.
+   */
+@property (nonatomic, strong) id<SFSDKOAuthProtocol>authClient;
 
 ///---------------------------------------------------------------------------------------
 /// @name Initialization
@@ -416,7 +388,7 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
 
 - (BOOL)handleIDPAuthenticationResponse:(NSURL *)appUrlResponse;
 
-- (void)beginIDPFlow:(SFOAuthCredentials *)spAppCredentials;
+- (void)beginIDPFlow;
 
 @end
 

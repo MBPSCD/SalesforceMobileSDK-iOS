@@ -135,7 +135,7 @@ static NSString * const kFilesSharedKey = @"filesShared";
                 return nil;
             }
             // Note: if the user communityId is nil, we use the default (internal) name for it.
-            return [self directoryForOrg:user.credentials.organizationId user:user.credentials.userId community:user.communityId?:kDefaultCommunityName type:type components:components];
+            return [self directoryForOrg:user.credentials.organizationId user:user.credentials.userId community:user.credentials.communityId?:kDefaultCommunityName type:type components:components];
     }
 }
 
@@ -146,7 +146,7 @@ static NSString * const kFilesSharedKey = @"filesShared";
             return nil;
         }
         // Note: if the user communityId is nil, we use the default (internal) name for it.
-        return [self directoryForOrg:user.credentials.organizationId user:user.credentials.userId community:user.communityId?:kDefaultCommunityName type:type components:components];
+        return [self directoryForOrg:user.credentials.organizationId user:user.credentials.userId community:user.credentials.communityId?:kDefaultCommunityName type:type components:components];
     } else {
         return [self globalDirectoryOfType:type components:components];
     }
@@ -207,15 +207,12 @@ static NSString * const kFilesSharedKey = @"filesShared";
     if (directories.count > 0) {
         docDirectory = [directories[0] stringByAppendingPathComponent:[NSBundle mainBundle].bundleIdentifier];
     }
-    
-    NSURL *sharedURL = [fileManager containerURLForSecurityApplicationGroupIdentifier:[SFSDKDatasharingHelper sharedInstance].appGroupName];
-    NSString *sharedDirectory = [sharedURL path];
-    sharedDirectory = [sharedDirectory stringByAppendingPathComponent:[SFSDKDatasharingHelper sharedInstance].appGroupName];
+
     if (libDirectories.count > 0) {
         libDirectory = [libDirectories[0] stringByAppendingPathComponent:[NSBundle mainBundle].bundleIdentifier];
     }
     
-    if( isGroupAccessEnabled || filesShared ) {
+    if (isGroupAccessEnabled || filesShared) {
         NSURL *sharedURL = [fileManager containerURLForSecurityApplicationGroupIdentifier:[SFSDKDatasharingHelper sharedInstance].appGroupName];
         NSString *sharedDirectory = [sharedURL path];
         NSString *sharedLibDirectory = nil;

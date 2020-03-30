@@ -35,6 +35,9 @@
 #import "SFSDKDevInfoViewController.h"
 #import "SFDefaultUserManagementViewController.h"
 #import <SalesforceSDKCommon/SFSwiftDetectUtil.h>
+#import "SFSDKEncryptedURLCache.h"
+#import "SFSDKNullURLCache.h"
+#import "UIColor+SFColors.h"
 
 static NSString * const kSFAppFeatureSwiftApp   = @"SW";
 static NSString * const kSFAppFeatureMultiUser   = @"MU";
@@ -54,6 +57,7 @@ static NSString* ailtnAppName = nil;
 
 // Dev support
 static NSString *const SFSDKShowDevDialogNotification = @"SFSDKShowDevDialogNotification";
+static IMP motionEndedImplementation = nil;
 
 // User agent constants
 static NSString * const kSFMobileSDKNativeDesignator = @"Native";
@@ -61,13 +65,20 @@ static NSString * const kSFMobileSDKHybridDesignator = @"Hybrid";
 static NSString * const kSFMobileSDKReactNativeDesignator = @"ReactNative";
 static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
 
+// URL cache
+static NSString * const kDefaultCachePath = @"salesforce.mobilesdk.URLCache";
+static NSInteger const kDefaultCacheMemoryCapacity = 1024 * 1024 * 4; // 4MB
+static NSInteger const kDefaultCacheDiskCapacity = 1024 * 1024 * 20;  // 20MB
+
 @implementation UIWindow (SalesforceSDKManager)
 
-- (void)sfsdk_motionEnded:(__unused UIEventSubtype)motion withEvent:(UIEvent *)event
-{
+- (void)sfsdk_motionEnded:(UIEventSubtype)motion withEvent:(UIEvent *)event {
     if (event.subtype == UIEventSubtypeMotionShake) {
         [[NSNotificationCenter defaultCenter] postNotificationName:SFSDKShowDevDialogNotification object:nil];
     }
+    // Doing this instead of exchanging the implementations and calling sfsdk_motionEnded:withEvent: so that
+    // it has the correct value for _cmd (motionEnded:withEvent:)
+    ((void(*)(id, SEL, long, id))motionEndedImplementation)(self, _cmd, motion, event);
 }
 
 @end
@@ -78,7 +89,7 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
     [super viewDidLoad];
     self.view.frame = [UIScreen mainScreen].bounds;
     self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [UIColor salesforceSystemBackgroundColor];
 }
 
 - (BOOL)shouldAutorotate {
@@ -103,6 +114,8 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
 @interface SalesforceSDKManager ()
 
 @property(nonatomic, strong) UIAlertController *actionSheet;
+@property(nonatomic, strong) WKWebView *webView; // for calculating user agent
+@property(nonatomic, strong) NSString *webViewUserAgent; // for calculating user agent
 
 @end
 
@@ -126,10 +139,6 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
 
 + (void)initialize {
     if (self == [SalesforceSDKManager class]) {
-
-        // For dev support
-        method_exchangeImplementations(class_getInstanceMethod([UIWindow class], @selector(motionEnded:withEvent:)), class_getInstanceMethod([UIWindow class], @selector(sfsdk_motionEnded:withEvent:)));
-
         /*
          * Checks if an analytics app name has already been set by the app.
          * If not, fetches the default app name to be used and sets it.
@@ -176,6 +185,27 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
     return sdkManager;
 }
 
++ (void)load {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // For dev support
+        Method sfsdkMotionEndedMethod = class_getInstanceMethod([UIWindow class], @selector(sfsdk_motionEnded:withEvent:));
+        IMP sfsdkMotionEndedImplementation = method_getImplementation(sfsdkMotionEndedMethod);
+        motionEndedImplementation = method_setImplementation(class_getInstanceMethod([UIWindow class], @selector(motionEnded:withEvent:)), sfsdkMotionEndedImplementation);
+
+        // Pasteboard
+         method_exchangeImplementations(class_getClassMethod([UIPasteboard class], @selector(generalPasteboard)), class_getClassMethod([SalesforceSDKManager class], @selector(sdkPasteboard)));
+    });
+}
+
++ (UIPasteboard *)sdkPasteboard {
+    if ([SFManagedPreferences sharedPreferences].shouldDisableExternalPasteDefinedByConnectedApp) {
+        return [UIPasteboard pasteboardWithName:@"com.salesforce.mobilesdk.pasteboard" create:YES];
+    }
+    // General pasteboard that was swizzled
+    return [SalesforceSDKManager sdkPasteboard];
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -205,7 +235,9 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
         
         [SFPasscodeManager sharedManager].preferredPasscodeProvider = kSFPasscodeProviderPBKDF2;
         self.useSnapshotView = YES;
+        [self computeWebViewUserAgent]; // web view user agent is computed asynchronously so very first call to self.userAgentString(...) will be missing it
         self.userAgentString = [self defaultUserAgentString];
+        self.URLCacheType = kSFURLCacheTypeEncrypted;
         [self setupServiceConfiguration];
     }
     return self;
@@ -365,6 +397,13 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
     }
     
     return launchActionString;
+}
+- (void)setEncryptURLCache:(BOOL)encryptURLCache {
+    if (encryptURLCache) {
+        [self setURLCacheType:kSFURLCacheTypeEncrypted];
+    } else {
+        [self setURLCacheType:kSFURLCacheTypeStandard];
+    }
 }
 
 #pragma mark - Dev support methods
@@ -701,9 +740,9 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
     // Don't present snapshot during advanced authentication or Passcode Presentation
     // ==============================================================================
     // During advanced authentication, application is briefly backgrounded then foregrounded
-    // The SFAuthenticationSession's view controller is pushed into the key window
-    // If we make the snapshot window the active window now, that's where the SFAuthenticationSession's view controller will end up
-    // Then when the application is foregrounded and the snapshot window is dismissed, we will lose the SFAuthenticationSession
+    // The ASWebAuthenticationSession's view controller is pushed into the key window
+    // If we make the snapshot window the active window now, that's where the ASWebAuthenticationSession's view controller will end up
+    // Then when the application is foregrounded and the snapshot window is dismissed, we will lose the ASWebAuthenticationSession
     SFSDKWindowContainer* activeWindow = [SFSDKWindowManager sharedManager].activeWindow;
     if ([activeWindow isAuthWindow] || [activeWindow isPasscodeWindow]) {
         return;
@@ -837,7 +876,6 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
             
         }
     }
-    
 }
 
 - (void)clearClipboard
@@ -946,7 +984,6 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
         NSString *prodAppVersion = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
         NSString *buildNumber = [[NSBundle mainBundle] infoDictionary][(NSString*)kCFBundleVersionKey];
         NSString *appVersion = [NSString stringWithFormat:@"%@(%@)", prodAppVersion, buildNumber];
-        NSString *webViewUserAgent = [self getUIWebViewUserAgent];
 
         // App type.
         NSString *appTypeStr = [self getAppTypeAsString];
@@ -962,23 +999,24 @@ static NSString * const kSFMobileSDKNativeSwiftDesignator = @"NativeSwift";
                                  (qualifier != nil ? qualifier : @""),
                                  uid,
                                  [[[SFSDKAppFeatureMarkers appFeatures].allObjects sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)] componentsJoinedByString:@"."],
-                                 webViewUserAgent
+                                 self.webViewUserAgent == nil ? @"" : self.webViewUserAgent
                                  ];
         return myUserAgent;
     };
 }
 
-- (NSString *)getUIWebViewUserAgent {
-    static NSString *webViewUserAgent = nil;
+- (void)computeWebViewUserAgent {
     static dispatch_once_t onceToken;
+    self.webView = [[WKWebView alloc] initWithFrame:CGRectZero];
+    [self.webView loadHTMLString:@"<html></html>" baseURL:nil];
+    __weak typeof(self) weakSelf = self;
     dispatch_once_on_main_thread(&onceToken, ^{
-        // Grabs the current user agent. This is very hackish but WKWebView, which we
-        // want to transition too currently evaluates Javscript asynchronously (11/2/17)
-        UIWebView *webView = [[UIWebView alloc] initWithFrame:CGRectZero];
-        webViewUserAgent = [webView stringByEvaluatingJavaScriptFromString:@"navigator.userAgent"];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf.webView evaluateJavaScript:@"navigator.userAgent" completionHandler:^(id __nullable userAgent, NSError * __nullable error) {
+            strongSelf.webViewUserAgent = userAgent;
+            strongSelf.webView = nil;
+        }];
     });
-    
-    return webViewUserAgent;
 }
 
 void dispatch_once_on_main_thread(dispatch_once_t *predicate, dispatch_block_t block) {
@@ -1021,6 +1059,29 @@ void dispatch_once_on_main_thread(dispatch_once_t *predicate, dispatch_block_t b
         for (id<SalesforceSDKManagerDelegate> delegate in self.delegates) {
             if (block) block(delegate);
         }
+    }
+}
+
+- (void)setURLCacheType:(SFURLCacheType)URLCacheType {
+    if (_URLCacheType != URLCacheType) {
+        _URLCacheType = URLCacheType;
+        [NSURLCache.sharedURLCache removeAllCachedResponses];
+        NSURLCache *cache;
+        switch (URLCacheType) {
+            case kSFURLCacheTypeEncrypted:
+                _encryptURLCache = YES;
+                cache = [[SFSDKEncryptedURLCache alloc] initWithMemoryCapacity:kDefaultCacheMemoryCapacity diskCapacity:kDefaultCacheDiskCapacity diskPath:kDefaultCachePath];
+                break;
+            case kSFURLCacheTypeNull:
+                _encryptURLCache = NO;
+                 cache = [[SFSDKNullURLCache alloc] initWithMemoryCapacity:kDefaultCacheMemoryCapacity diskCapacity:kDefaultCacheDiskCapacity diskPath:kDefaultCachePath];
+                break;
+            case kSFURLCacheTypeStandard:
+                _encryptURLCache = NO;
+                cache = [[NSURLCache alloc] initWithMemoryCapacity:kDefaultCacheMemoryCapacity diskCapacity:kDefaultCacheDiskCapacity diskPath:kDefaultCachePath];
+                break;
+        }
+        [NSURLCache setSharedURLCache:cache];
     }
 }
 

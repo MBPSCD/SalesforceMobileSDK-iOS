@@ -61,6 +61,7 @@ static SFSmartStoreEncryptionKeyBlock _encryptionKeyBlock = NULL;
 static SFSmartStoreEncryptionSaltBlock _encryptionSaltBlock = NULL;
 static BOOL _storeUpgradeHasRun = NO;
 static BOOL _jsonSerializationCheckEnabled = NO;
+static BOOL _postRawJsonOnError = NO;
 
 // The name of the store name used by the SFSmartStorePlugin for hybrid apps
 NSString * const kDefaultSmartStoreName   = @"defaultStore";
@@ -68,6 +69,7 @@ NSString * const kDefaultSmartStoreName   = @"defaultStore";
 NSString * const kSFAppFeatureSmartStoreUser   = @"US";
 NSString * const kSFAppFeatureSmartStoreGlobal   = @"GS";
 NSString * const kSFSmartStoreJSONParseErrorNotification = @"SFSmartStoreJSONParseErrorNotification";
+NSString * const kSFSmartStoreJSONSerializationErrorNotification = @"SFSmartStoreJSONSerializationErrorNotification";
 
 // NSError constants  (TODO: We should move this stuff into a framework where errors can be configurable
 // in a plist, once we start delivering a bundle.
@@ -865,15 +867,24 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     log(@"1/4 Starting to write to tmp file");
     [outputStream open];
     NSError *error = nil;
-    BOOL success = [NSJSONSerialization writeJSONObject:soupEntry
-                                               toStream:outputStream
-                                                options:0
-                                                  error:&error];
+    
+    // NSJSONSerialization:writeJSONObject returns the number of bytes written
+    // So NSJSONSerialization:writeJSONObject can return a value > 0 while there is an error
+    [NSJSONSerialization writeJSONObject:soupEntry
+                                toStream:outputStream
+                                 options:0
+                                   error:&error];
     [outputStream close];
-    log(@"2/4 Done writing to tmp file");
+    
+    if (error) {
+        [SFSmartStore buildEventOnJsonSerializationErrorForUser:self.user fromMethod:NSStringFromSelector(_cmd) error:error];
+    }
 
+    BOOL success = !error;
+    
     // Renaming tmp file by using moveItemAtPath (but first check if destination exists and deletes it if it does)
     if (success) {
+        log(@"2/4 Done writing to tmp file");
         log(@"3/4 Renaming tmp file");
         
         if ([[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
@@ -898,7 +909,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
                                   tmpFilePath,
                                   filePath,
                                   error];
-        NSAssert(NO, errorMessage);
         [SFSDKSmartStoreLogger e:[self class] format:errorMessage];
     }
     
@@ -912,18 +922,32 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     return [SFJsonUtils objectFromJSONString:[self loadExternalSoupEntryAsString:soupEntryId soupTableName:soupTableName]];
 }
 
-+ (void)buildEventOnJsonErrorForUser:(SFUserAccount *)user {
++ (void)buildEventOnJsonParseErrorForUser:(SFUserAccount *)user fromMethod:(NSString*)fromMethod rawJson:(NSString*)rawJson {
     NSMutableDictionary *attributes = [[NSMutableDictionary alloc] init];
     attributes[@"errorCode"] = [NSNumber numberWithInteger:SFJsonUtils.lastError.code];
     attributes[@"errorMessage"] = SFJsonUtils.lastError.localizedDescription;
+    attributes[@"fromMethod"] = fromMethod;
     [SFSDKEventBuilderHelper createAndStoreEvent:@"SmartStoreJSONParseError" userAccount:user className:NSStringFromClass([self class]) attributes:attributes];
-    [[NSNotificationCenter defaultCenter] postNotificationName:kSFSmartStoreJSONParseErrorNotification object:self];
+    
+    NSMutableDictionary *info = [NSMutableDictionary dictionaryWithDictionary:attributes];
+    if (_postRawJsonOnError) info[@"rawJson"] = rawJson;
+    [[NSNotificationCenter defaultCenter] postNotificationName:kSFSmartStoreJSONParseErrorNotification object:self userInfo:info];
+}
+
++ (void)buildEventOnJsonSerializationErrorForUser:(SFUserAccount *)user fromMethod:(NSString*)fromMethod error:(NSError*)error {
+    NSMutableDictionary *attributes = [[NSMutableDictionary alloc] init];
+    attributes[@"errorCode"] = [NSNumber numberWithInteger:error.code];
+    attributes[@"errorMessage"] = error.localizedDescription;
+    attributes[@"fromMethod"] = fromMethod;
+    [SFSDKEventBuilderHelper createAndStoreEvent:@"SmartStoreJSONSerializationError" userAccount:user className:NSStringFromClass([self class]) attributes:attributes];
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kSFSmartStoreJSONParseErrorNotification object:self userInfo:attributes];
 }
 
 - (BOOL)checkRawJson:(NSString*)rawJson fromMethod:(NSString*)fromMethod {
     if (_jsonSerializationCheckEnabled && [SFJsonUtils objectFromJSONString:rawJson] == nil) {
         [SFSDKSmartStoreLogger e:[self class] format:@"Error parsing JSON in SmartStore in %@", fromMethod];
-        [SFSmartStore buildEventOnJsonErrorForUser:self.user];
+        [SFSmartStore buildEventOnJsonParseErrorForUser:self.user fromMethod:fromMethod rawJson:rawJson];
         return NO;
     } else {
         return YES;
@@ -1728,9 +1752,12 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 
 - (NSArray *)queryWithQuerySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex error:(NSError **)error;
 {
-    NSMutableString* resultString = [NSMutableString new];
-    if ([self queryAsString:resultString querySpec:querySpec pageIndex:pageIndex error:error]) {
-        return [SFJsonUtils objectFromJSONString:resultString];
+    __block NSMutableArray* resultArray = [NSMutableArray new];
+    BOOL succ = [self inDatabase:^(FMDatabase* db) {
+        [self runQuery:resultArray resultString:nil querySpec:querySpec pageIndex:pageIndex withDb:db];
+    } error:error];
+    if (succ) {
+        return resultArray;
     } else {
         return nil;
     }
@@ -1739,12 +1766,15 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 - (BOOL) queryAsString:(NSMutableString*)resultString querySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex error:(NSError **)error NS_SWIFT_NAME(query(result:querySpec:pageIndex:))
 {
     return [self inDatabase:^(FMDatabase* db) {
-        [self queryAsString:resultString querySpec:querySpec pageIndex:pageIndex withDb:db];
+        [self runQuery:nil resultString:resultString querySpec:querySpec pageIndex:pageIndex withDb:db];
     } error:error];
 }
 
-- (void)queryAsString:(NSMutableString*)resultString querySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex withDb:(FMDatabase*)db
+- (void)runQuery:(NSMutableArray*)resultArray resultString:(NSMutableString*)resultString querySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex withDb:(FMDatabase*)db
 {
+    NSAssert(resultArray != nil ^ resultString != nil, @"resultArray or resultString must be non-nil, but not both at the same times.");
+    BOOL computeResultAsString = resultString != nil;
+    
     // Page
     NSUInteger offsetRows = querySpec.pageSize * pageIndex;
     NSUInteger numberRows = querySpec.pageSize;
@@ -1766,79 +1796,133 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         
         // Smart queries
         if (querySpec.queryType == kSFSoupQueryTypeSmart || querySpec.selectPaths != nil) {
-            NSMutableString *getDataFromRow = [[NSMutableString alloc] init];
-            [self getDataFromRowAsString:getDataFromRow resultSet:frs];
-            [resultStrings addObject:getDataFromRow];
+            if (computeResultAsString) {
+                NSMutableString *rowData = [NSMutableString new];
+                [self getDataFromRow:nil resultString:rowData resultSet:frs];
+                if (rowData) {
+                    [resultStrings addObject:rowData];
+                }
+            } else {
+                NSMutableArray *rowData = [NSMutableArray new];
+                [self getDataFromRow:rowData resultString:nil resultSet:frs];
+                if (rowData) {
+                    [resultArray addObject:rowData];
+                }
+            }
         }
         // Exact/like/range queries
         else {
-            for (int i = 0; i < frs.columnCount; i++) {
-                @autoreleasepool {
-                    NSString *columnName = [frs columnNameForIndex:i];
-                    if ([columnName isEqualToString:SOUP_COL]) {
-                        NSString *rawJson = [frs stringForColumnIndex:i];
-                        [resultStrings addObject:rawJson];
-                    }
-                    else if ([columnName isEqualToString:kSoupFeatureExternalStorage]) {
-                        NSString *tableName = [frs stringForColumnIndex:i];
-                        NSNumber *soupEntryId = @([frs longForColumnIndex:++i]);
-                        NSString *loadResult = [self loadExternalSoupEntryAsString:soupEntryId soupTableName:tableName];
-                        if (loadResult) {
-                            [resultStrings addObject:loadResult];
-                        }
-                    }
+            NSString* rawJson;
+            NSString *columnName = [frs columnNameForIndex:0];
+            if ([columnName isEqualToString:SOUP_COL]) {
+                rawJson = [frs stringForColumnIndex:0];
+            }
+            else if ([columnName isEqualToString:kSoupFeatureExternalStorage]) {
+                NSString *tableName = [frs stringForColumnIndex:0];
+                NSNumber *soupEntryId = @([frs longForColumnIndex:1]);
+                rawJson = [self loadExternalSoupEntryAsString:soupEntryId soupTableName:tableName];
+            }
+            
+            if (computeResultAsString) {
+                if (rawJson) {
+                    [resultStrings addObject:rawJson];
+                }
+            } else {
+                id entry = [SFJsonUtils objectFromJSONString:rawJson];
+                if (entry) {
+                    [resultArray addObject:entry];
                 }
             }
         }
     }
     [frs close];
-    [resultString appendString:@"["];
-    [resultString appendString:[resultStrings componentsJoinedByString:@","]];
-    [resultString appendString:@"]"];
+    
+    if (computeResultAsString) {
+        [resultString appendString:@"["];
+        [resultString appendString:[resultStrings componentsJoinedByString:@","]];
+        [resultString appendString:@"]"];
+    }
 }
 
-- (void) getDataFromRowAsString:(NSMutableString*)resultString resultSet:(FMResultSet*)frs
+- (void) getDataFromRow:(NSMutableArray*)resultArray resultString:(NSMutableString*)resultString resultSet:(FMResultSet*)frs
 {
+    NSAssert(resultArray != nil ^ resultString != nil, @"resultArray or resultString must be non-nil, but not both at the same times.");
+    BOOL computeResultAsString = resultString != nil;
     NSDictionary* valuesMap = [frs resultDictionary];
     NSMutableArray *resultStrings = [NSMutableArray array];
+    
     for (int i = 0; i < frs.columnCount; i++) {
         @autoreleasepool {
             NSString* columnName = [frs columnNameForIndex:i];
             id value = valuesMap[columnName];
-            if ([value isKindOfClass:[NSNull class]]) {
-                [resultStrings addObject:@"null"];
-            }
-            else if ([value isKindOfClass:[NSString class]] &&
-                     ([columnName isEqualToString:SOUP_COL] || [columnName hasPrefix:[NSString stringWithFormat:@"%@:", SOUP_COL]])) {
-                [resultStrings addObject:value];
-            }
-            else if ([columnName isEqualToString:kSoupFeatureExternalStorage]) {
-                NSNumber *soupEntryId = @([frs longForColumnIndex:++i]);
-                NSString *loadResult = [self loadExternalSoupEntryAsString:soupEntryId soupTableName:value];
-                if (loadResult) {
-                    [resultStrings addObject:loadResult];
+            
+            BOOL isSoupCol = [value isKindOfClass:[NSString class]] &&
+            ([columnName isEqualToString:SOUP_COL] || [columnName hasPrefix:[NSString stringWithFormat:@"%@:", SOUP_COL]]);
+            BOOL isExternalSoupCol = [columnName isEqualToString:kSoupFeatureExternalStorage];
+            
+            // If this is a soup column then the value is a serialized json
+            if (isSoupCol || isExternalSoupCol) {
+                if (isExternalSoupCol) {
+                    // Reading the actual value from external storage
+                    NSNumber *soupEntryId = @([frs longForColumnIndex:++i]);
+                    value = [self loadExternalSoupEntryAsString:soupEntryId soupTableName:value];
+                }
+
+                if (computeResultAsString) {
+                    if (value) {
+                        [resultStrings addObject:value];
+                    } else {
+                        // This is a smart query, we can't skip
+                        // If you do select x,y,z, then you expect 3 values per row in the result set
+                        [resultStrings addObject:@"null"];
+                    }
+                } else {
+                    id entry = [SFJsonUtils objectFromJSONString:value];
+                    if (entry) {
+                        [resultArray addObject:entry];
+                    } else {
+                        // This is a smart query, we can't skip
+                        // If you do select x,y,z, then you expect 3 values per row in the result set
+                        [resultStrings addObject:[NSNull null]];
+                    }
                 }
             }
-            else if ([value isKindOfClass:[NSNumber class]]) {
-                [resultStrings addObject:[((NSNumber*)value) stringValue]];
-            }
-            else if ([value isKindOfClass:[NSString class]]) {
-                NSMutableString *tmpString = [[NSMutableString alloc] init];
-                [tmpString appendString:@"\""];
-                [tmpString appendString:[self escapeStringValue:((NSString*) value)]];
-                [tmpString appendString:@"\""];
-                [resultStrings addObject:tmpString];
+            // Otherwise the value is an atomic type
+            else {
+                if (computeResultAsString) {
+                    if ([value isKindOfClass:[NSNull class]]) {
+                        [resultStrings addObject:@"null"];
+                    } else if ([value isKindOfClass:[NSNumber class]]) {
+                        [resultStrings addObject:[((NSNumber*)value) stringValue]];
+                    }
+                    else if ([value isKindOfClass:[NSString class]]) {
+                        NSString *escapedAndQuotedValue = [self escapeStringValueAndQuote:(NSString*) value];
+                        if (escapedAndQuotedValue) {
+                            [resultStrings addObject:escapedAndQuotedValue];
+                        } else {
+                            // This is a smart query, we can't skip
+                            // If you do select x,y,z, then you expect 3 values per row in the result set
+                            [resultStrings addObject:@"null"];
+                        }
+                    }
+
+                } else {
+                    [resultArray addObject:value];
+                }
             }
         }
     }
-    [resultString appendString:@"["];
-    [resultString appendString:[resultStrings componentsJoinedByString:@","]];
-    [resultString appendString:@"]"];
+    
+    if (computeResultAsString) {
+        [resultString appendString:@"["];
+        [resultString appendString:[resultStrings componentsJoinedByString:@","]];
+        [resultString appendString:@"]"];
+    }
 }
 
--(NSString*) escapeStringValue:(NSString*) raw {
+-(NSString*) escapeStringValueAndQuote:(NSString*) raw {
     NSMutableString* escaped = [NSMutableString new];
-    
+    [escaped appendString:@"\""];
     for (NSUInteger i = 0; i < raw.length; i += 1) {
         unichar c = [raw characterAtIndex:i];
         switch (c) {
@@ -1870,7 +1954,13 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
                 }
         }
     }
-    return [NSString stringWithString:escaped];
+    [escaped appendString:@"\""];
+    
+    if (![self checkRawJson:[NSString stringWithFormat:@"[%@]", escaped] fromMethod:NSStringFromSelector(_cmd)]) {
+        return nil;
+    } else {
+        return [NSString stringWithString:escaped];
+    }
 }
 
 - (NSString *)idsInPredicate:(NSArray *)ids idCol:(NSString*)idCol
@@ -2452,6 +2542,10 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 
 + (void)setJsonSerializationCheckEnabled:(BOOL)jsonSerializationCheckEnabled {
     _jsonSerializationCheckEnabled = jsonSerializationCheckEnabled;
+}
+
++ (void)setPostRawJsonOnError:(BOOL)postRawJsonOnError {
+    _postRawJsonOnError = postRawJsonOnError;
 }
 
 +(BOOL) isJsonSerializationCheckEnabled {

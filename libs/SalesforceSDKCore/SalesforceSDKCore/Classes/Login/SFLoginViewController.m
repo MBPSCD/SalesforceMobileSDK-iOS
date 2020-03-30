@@ -43,9 +43,6 @@
 
 @property (nonatomic, strong) UINavigationBar *navBar;
 
-// Reference to the login host list view controller
-@property (nonatomic, strong) SFSDKLoginHostListViewController *loginHostListViewController;
-
 // Reference to previous user account
 @property (nonatomic, strong) SFUserAccount *previousUserAccount;
 @end
@@ -220,7 +217,10 @@
 
 - (UIBarButtonItem *)createSettingsButton {
     UIImage *image = [[SFSDKResourceUtils imageNamed:@"login-window-gear"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    return [[UIBarButtonItem alloc] initWithImage:image style:UIBarButtonItemStylePlain target:self action:@selector(showLoginHost:)];
+    UIBarButtonItem *settingsButton = [[UIBarButtonItem alloc] initWithImage:image style:UIBarButtonItemStylePlain target:self action:@selector(showLoginHost:)];
+    settingsButton.accessibilityLabel = [SFSDKResourceUtils localizedString:@"LOGIN_CHOOSE_SERVER"];
+    settingsButton.accessibilityIdentifier = @"choose connection button";
+    return settingsButton;
 }
 
 - (UIView *)createTitleItem {
@@ -236,6 +236,11 @@
     item.text = title;
     [item sizeToFit];
     return item;
+}
+
+- (SFSDKLoginHostListViewController *)createLoginHostListViewController {
+    SFSDKLoginHostListViewController *loginHostListViewController = [[SFSDKLoginHostListViewController alloc] initWithStyle:UITableViewStylePlain];
+    return loginHostListViewController;
 }
 
 - (BOOL)shouldAutorotate {
@@ -267,12 +272,12 @@
 }
 
 - (void)handleBackButtonAction {
-   
+    [[SFUserAccountManager sharedInstance] stopCurrentAuthentication:nil];
     if (![SFUserAccountManager sharedInstance].idpEnabled) {
         [[SFSDKWindowManager sharedManager].authWindow.viewController.presentedViewController dismissViewControllerAnimated:NO completion:^{
             [[SFSDKWindowManager sharedManager].authWindow dismissWindow];
         }];
-    }else {
+    } else {
         [[SFSDKWindowManager sharedManager].authWindow.viewController dismissViewControllerAnimated:NO completion:nil];
     }
 }
@@ -281,7 +286,7 @@
 
 - (SFSDKLoginHostListViewController *)loginHostListViewController {
     if (!_loginHostListViewController) {
-        _loginHostListViewController = [[SFSDKLoginHostListViewController alloc] initWithStyle:UITableViewStylePlain];
+        _loginHostListViewController = [self createLoginHostListViewController];
         _loginHostListViewController.delegate = self;
     }
     return _loginHostListViewController;
@@ -334,7 +339,12 @@
 
 - (void)showHostListView {
     SFSDKNavigationController *navController = [[SFSDKNavigationController alloc] initWithRootViewController:self.loginHostListViewController];
-    navController.modalPresentationStyle = UIModalPresentationPageSheet;
+    if (@available(iOS 13.0, *)) {
+        navController.modalPresentationStyle = UIModalPresentationFullScreen;
+    } else {
+       navController.modalPresentationStyle = UIModalPresentationPageSheet;
+    }
+    
     [self presentViewController:navController animated:YES completion:nil];
 }
 
