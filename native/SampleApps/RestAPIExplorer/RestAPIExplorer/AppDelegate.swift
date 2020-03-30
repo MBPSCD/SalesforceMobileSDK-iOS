@@ -32,13 +32,10 @@ import SalesforceSDKCore
 
 import MobileCoreServices
 
-class AppDelegate : UIResponder, UIApplicationDelegate
-{
+class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
     
-    override
-    init()
-    {
+    override init() {
         
         super.init()
       
@@ -57,76 +54,54 @@ class AppDelegate : UIResponder, UIApplicationDelegate
     
     // MARK: - App delegate lifecycle
     
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool
-    {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         self.window = UIWindow(frame: UIScreen.main.bounds)
-        self.initializeAppViewState();
+        self.initializeAppViewState()
         
         // If you wish to register for push notifications, uncomment the line below.  Note that,
         // if you want to receive push notifications from Salesforce, you will also need to
         // implement the application:didRegisterForRemoteNotificationsWithDeviceToken: method (below).
-        //
-        // SFPushNotificationManager.sharedInstance().registerForRemoteNotifications()
+        // self.registerForRemotePushNotifications()
         
-        //Uncomment the code below to see how you can customize the color, textcolor,
-        //font and fontsize of the navigation bar
-        //let loginViewConfig = SalesforceLoginViewControllerConfig()
-        
-        //Set showSettingsIcon to false if you want to hide the settings
-        //icon on the nav bar
-        //loginViewConfig.showsSettingsIcon = false
-        
-        //Set showNavBar to false if you want to hide the top bar
-        //loginViewConfig.showsNavigationBar = false
-        //loginViewConfig.navigationBarColor = UIColor(red: 0.051, green: 0.765, blue: 0.733, alpha: 1.0)
-        //loginViewConfig.navigationBarTextColor = UIColor.white
-        //loginViewConfig.navigationBarFont = UIFont(name: "Helvetica", size: 16.0)
-        //UserAccountManager.shared.loginViewControllerConfig = loginViewConfig
+        // Uncomment the code below to see how you can customize the color, textcolor,
+        // font and fontsize of the navigation bar
+        // self.customizeLoginView()
         
         // Uncomment the code below to customize the color, textcolor and font of the Passcode,
         // Touch Id and Face Id lock screens.  To use this feature please enable inactivity timeout
         // in your connected app.
-        //
-        //let passcodeViewConfig = AppLockViewControllerConfig()
-        //passcodeViewConfig.backgroundColor = UIColor.black
-        //passcodeViewConfig.primaryColor = UIColor.orange
-        //passcodeViewConfig.secondaryColor = UIColor.gray
-        //passcodeViewConfig.titleTextColor = UIColor.white
-        //passcodeViewConfig.instructionTextColor = UIColor.white
-        //passcodeViewConfig.borderColor = UIColor.yellow
-        //passcodeViewConfig.maxNumberOfAttempts = 3
-        //passcodeViewConfig.forcePasscodeLength = true
-        //UserAccountManager.shared.appLockViewControllerConfig = passcodeViewConfig
-        
+        // self.customizePasscodeView()
+
         AuthHelper.loginIfRequired {
             self.setupRootViewController()
         }
         return true
     }
-    
-    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data)
-    {
-        //
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         // Uncomment the code below to register your device token with the push notification manager
-        //
-        //
-        // SFPushNotificationManager.sharedInstance().didRegisterForRemoteNotifications(withDeviceToken: deviceToken)
-        // if let _ = UserAccountManager.shared.currentUserAccount?.credentials.accessToken {
-        //     SFPushNotificationManager.sharedInstance().registerSalesforceNotifications(completionBlock: {
-        //         SalesforceLogger.e(AppDelegate.self, message: "Registration for Salesforce notifications succeeded")
-        //     }, fail: {
-        //         SalesforceLogger.e(AppDelegate.self, message: "Registration for Salesforce notifications failed")
-        //     })
-        // }
+        // didRegisterForRemoteNotifications(deviceToken)
+    }
+
+    func didRegisterForRemoteNotifications(_ deviceToken: Data) {
+        PushNotificationManager.sharedInstance().didRegisterForRemoteNotifications(withDeviceToken: deviceToken)
+        if let _ = UserAccountManager.shared.currentUserAccount?.credentials.accessToken {
+            PushNotificationManager.sharedInstance().registerForSalesforceNotifications { (result) in
+                switch (result) {
+                    case  .success(let successFlag):
+                        SalesforceLogger.d(AppDelegate.self, message: "Registration for Salesforce notifications status:  \(successFlag)")
+                    case .failure(let error):
+                        SalesforceLogger.e(AppDelegate.self, message: "Registration for Salesforce notifications failed \(error)")
+                }
+            }
+        }
     }
     
-    
-    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error )
-    {
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error ) {
         // Respond to any push notification registration errors here.
     }
     
-    func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+    func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         
         // Uncomment following block to enable IDP Login flow
         // return  UserAccountManager.shared.handleIdentityProviderResponse(from: url, with: options)
@@ -134,9 +109,8 @@ class AppDelegate : UIResponder, UIApplicationDelegate
     }
     
     // MARK: - Private methods
-    func initializeAppViewState()
-    {
-        if (!Thread.isMainThread) {
+    func initializeAppViewState() {
+        if !Thread.isMainThread {
             DispatchQueue.main.async {
                 self.initializeAppViewState()
             }
@@ -147,15 +121,13 @@ class AppDelegate : UIResponder, UIApplicationDelegate
         self.window!.makeKeyAndVisible()
     }
     
-    func setupRootViewController()
-    {
+    func setupRootViewController() {
         let rootVC = RootViewController(nibName: nil, bundle: nil)
         let navVC = UINavigationController(rootViewController: rootVC)
         self.window!.rootViewController = navVC
     }
     
-    func resetViewState(_ postResetBlock: @escaping () -> ())
-    {
+    func resetViewState(_ postResetBlock: @escaping () -> Void ) {
         if let rootViewController = self.window!.rootViewController {
             if let _ = rootViewController.presentedViewController {
                 rootViewController.dismiss(animated: false, completion: postResetBlock)
@@ -163,6 +135,44 @@ class AppDelegate : UIResponder, UIApplicationDelegate
             }
         }
         postResetBlock()
+    }
+
+    func registerForRemotePushNotifications() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { (granted, error) in
+            guard granted else {
+                SalesforceLogger.e(AppDelegate.self, message: "Push notification authorization denied")
+                return
+            }
+            DispatchQueue.main.async {
+                PushNotificationManager.sharedInstance().registerForRemoteNotifications()
+            }
+        }
+    }
+
+    func customizeLoginView() {
+        let loginViewConfig = SalesforceLoginViewControllerConfig()
+
+        // Set showSettingsIcon to NO if you want to hide the settings icon on the nav bar
+        loginViewConfig.showsSettingsIcon = false
+        // Set showNavBar to false if you want to hide the top bar
+        loginViewConfig.showsNavigationBar = false
+        loginViewConfig.navigationBarColor = UIColor(red: 0.051, green: 0.765, blue: 0.733, alpha: 1.0)
+        loginViewConfig.navigationTitleColor = UIColor.white
+        loginViewConfig.navigationBarFont = UIFont(name: "Helvetica", size: 16.0)
+        UserAccountManager.shared.loginViewControllerConfig = loginViewConfig
+    }
+
+    func customizePasscodeView() {
+        let passcodeViewConfig = AppLockViewControllerConfig()
+        passcodeViewConfig.backgroundColor = UIColor.black
+        passcodeViewConfig.primaryColor = UIColor.orange
+        passcodeViewConfig.secondaryColor = UIColor.gray
+        passcodeViewConfig.titleTextColor = UIColor.white
+        passcodeViewConfig.instructionTextColor = UIColor.white
+        passcodeViewConfig.borderColor = UIColor.yellow
+        passcodeViewConfig.maxNumberOfAttempts = 3
+        passcodeViewConfig.forcePasscodeLength = true
+        UserAccountManager.shared.appLockViewControllerConfig = passcodeViewConfig
     }
 
     func exportTestingCredentials() {
@@ -183,10 +193,9 @@ class AppDelegate : UIResponder, UIApplicationDelegate
         if let community = creds.communityUrl {
             config["community_url"] = community.absoluteString
         }
-        
+    
         let configJSON = SFJsonUtils.jsonRepresentation(config)
         let board = UIPasteboard.general
         board.setValue(configJSON, forPasteboardType: kUTTypeUTF8PlainText as String)
     }
 }
-

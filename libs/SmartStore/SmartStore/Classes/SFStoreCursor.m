@@ -24,7 +24,7 @@
 
 #import "SFStoreCursor.h"
 
-#import "SFSmartStore.h"
+#import "SFSmartStore+Internal.h"
 #import "SFQuerySpec.h"
 #import <SalesforceSDKCommon/SFJsonUtils.h>
 #import <SalesforceSDKCore/SFSDKEventBuilderHelper.h>
@@ -88,9 +88,33 @@
     [resultBuilder appendFormat:@"\"%@\":%@, ", @"totalPages", self.totalPages ?: @0];
     [resultBuilder appendFormat:@"\"%@\":%@, ", @"totalEntries", self.totalEntries ?: @0];
     [resultBuilder appendFormat:@"\"%@\":", @"currentPageOrderedEntries"];
-    [store queryAsString:resultBuilder querySpec:self.querySpec pageIndex:[self.currentPageIndex integerValue] error:error];
+    BOOL succ = [store queryAsString:resultBuilder querySpec:self.querySpec pageIndex:[self.currentPageIndex integerValue] error:error];
     [resultBuilder appendString:@"}"];
-    return resultBuilder;
+
+    if (succ && [store checkRawJson:resultBuilder fromMethod:NSStringFromSelector(_cmd)]) {
+        // NB: checkRawJson is only called if query succeeded
+        return resultBuilder;
+    } else {
+        return nil;
+    }
+}
+
+- (NSDictionary*)getDataDeserialized:(SFSmartStore*)store error:(NSError**)error
+{
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"cursorId"] = self.cursorId;
+    result[@"currentPageIndex"] = self.currentPageIndex ?: @0;
+    result[@"pageSize"] = self.pageSize ?: @0;
+    result[@"totalPages"] = self.totalPages ?: @0;
+    result[@"totalEntries"] = self.totalEntries ?: @0;
+    
+    NSArray* entries = [store queryWithQuerySpec:self.querySpec pageIndex:[self.currentPageIndex integerValue] error:error];
+    if (entries) {
+        result[@"currentPageOrderedEntries"] = entries;
+        return result;
+    } else {
+        return nil;
+    }
 }
 
 @end

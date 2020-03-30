@@ -23,13 +23,13 @@
  */
 
 #import <SalesforceSDKCommon/SFJsonUtils.h>
-#import "SFIdentityCoordinator.h"
 #import "SFIdentityCoordinator+Internal.h"
 #import "SFOAuthCredentials.h"
 #import "SFOAuthSessionRefresher.h"
 #import "SFIdentityData.h"
 #import "SFUserAccountManager.h"
 #import "SFNetwork.h"
+#import "SFSDKAuthSession.h"
 
 // Public constants
 
@@ -51,8 +51,14 @@ static NSString * const kSFIdentityErrorTypeAlreadyRetrieving = @"retrieval_in_p
 static NSString * const kMissingParametersFormatString        = @"The following required parameters for the identity service were missing: %@";
 static NSString * const kSFIdentityDataPropertyKey            = @"com.salesforce.keys.identity.data";
 
-@implementation SFIdentityCoordinator
+@interface SFIdentityCoordinator()
 
+@property (nonatomic) NSString *networkIdentifier;
+
+@end
+
+@implementation SFIdentityCoordinator
+@synthesize authSession = _authSession;
 @synthesize credentials = _credentials;
 @synthesize idData = _idData;
 @synthesize delegate = _delegate;
@@ -68,6 +74,18 @@ static NSString * const kSFIdentityDataPropertyKey            = @"com.salesforce
     self = [super init];
     if (self) {
         self.credentials = credentials;
+        self.timeout = kSFIdentityRequestDefaultTimeoutSeconds;
+        self.retrievingData = NO;
+    }
+    
+    return self;
+}
+
+- (id)initWithAuthSession:(SFSDKAuthSession *)authSession {
+    self = [super init];
+    if (self) {
+        self.authSession = authSession;
+        self.credentials = authSession.credentials;
         self.timeout = kSFIdentityRequestDefaultTimeoutSeconds;
         self.retrievingData = NO;
     }
@@ -136,7 +154,8 @@ static NSString * const kSFIdentityDataPropertyKey            = @"com.salesforce
     [request setHTTPShouldHandleCookies:NO];
     [SFSDKCoreLogger d:[self class] format:@"SFIdentityCoordinator:Starting identity request at %@", self.credentials.identityUrl.absoluteString];
     __weak __typeof(self) weakSelf = self;
-    SFNetwork *network = [[SFNetwork alloc] initWithEphemeralSession];
+    self.networkIdentifier = [SFNetwork uniqueInstanceIdentifier];
+    SFNetwork *network = [SFNetwork sharedEphemeralInstanceWithIdentifier:self.networkIdentifier];
     self.session = network.activeSession;
     [network sendRequest:request dataResponseBlock:^(NSData *data, NSURLResponse *response, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -196,14 +215,18 @@ static NSString * const kSFIdentityDataPropertyKey            = @"com.salesforce
 
 - (void)dealloc
 {
+    [SFNetwork removeSharedInstanceForIdentifier:self.networkIdentifier];
+    self.networkIdentifier = nil;
+    self.session = nil;
     self.credentials = nil;
     self.idData = nil;
-    self.session = nil;
     self.oauthSessionRefresher = nil;
 }
 
 - (void)cleanupData
 {
+    [SFNetwork removeSharedInstanceForIdentifier:self.networkIdentifier];
+    self.networkIdentifier = nil;
     self.session = nil;
     self.oauthSessionRefresher = nil;
     self.retrievingData = NO;
@@ -217,7 +240,6 @@ static NSString * const kSFIdentityDataPropertyKey            = @"com.salesforce
         [self notifyDelegateOfFailure:error];
         return;
     }
-    
     
     NSDictionary *idJsonData = (NSDictionary *)[SFJsonUtils objectFromJSONData:data];
     if (idJsonData == nil) {
