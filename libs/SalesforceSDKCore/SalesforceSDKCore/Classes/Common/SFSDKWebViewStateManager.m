@@ -98,34 +98,37 @@ static BOOL _sessionCookieManagementDisabled = NO;
     NSAssert(domainNames != nil && [domainNames count] > 0, ERR_NO_DOMAIN_NAMES);
     WKWebsiteDataStore *dataStore = [WKWebsiteDataStore defaultDataStore];
     NSSet *websiteDataTypes = [NSSet setWithArray:@[ WKWebsiteDataTypeCookies]];
-    [dataStore fetchDataRecordsOfTypes:websiteDataTypes
-                     completionHandler:^(NSArray<WKWebsiteDataRecord *> *records) {
-                         NSMutableArray<WKWebsiteDataRecord *> *deletedRecords = [NSMutableArray new];
-                         for (WKWebsiteDataRecord * record in records) {
-                             // Cookie record display names look like "salesforce.com", "force.com". Make
-                             // them look like proper cookie domain suffixes, for comparison.
-                             NSString *recordDisplayName = [NSString stringWithFormat:@".%@", record.displayName];
-                             for(NSString *domainName in domainNames) {
-                                 if ([domainName hasSuffix:recordDisplayName]) {
-                                     [deletedRecords addObject:record];
+    //MBPS_CD Customize - enforce to main thread when clean wkwebview session cookie
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [dataStore fetchDataRecordsOfTypes:websiteDataTypes
+                         completionHandler:^(NSArray<WKWebsiteDataRecord *> *records) {
+                             NSMutableArray<WKWebsiteDataRecord *> *deletedRecords = [NSMutableArray new];
+                             for (WKWebsiteDataRecord * record in records) {
+                                 // Cookie record display names look like "salesforce.com", "force.com". Make
+                                 // them look like proper cookie domain suffixes, for comparison.
+                                 NSString *recordDisplayName = [NSString stringWithFormat:@".%@", record.displayName];
+                                 for(NSString *domainName in domainNames) {
+                                     if ([domainName hasSuffix:recordDisplayName]) {
+                                         [deletedRecords addObject:record];
+                                     }
                                  }
                              }
-                         }
-                         if (deletedRecords.count > 0) {
-                             [dataStore removeDataOfTypes:websiteDataTypes
-                                           forDataRecords:deletedRecords
-                                        completionHandler:^{
-                                            if (completionBlock)
-                                                completionBlock();
-                                        }];
-                         } else {
-                             dispatch_async(dispatch_get_main_queue(), ^{
-                                 if (completionBlock) {
-                                     completionBlock();
-                                 }
-                             });
-                         }
-                     }];
+                             if (deletedRecords.count > 0) {
+                                 [dataStore removeDataOfTypes:websiteDataTypes
+                                               forDataRecords:deletedRecords
+                                            completionHandler:^{
+                                                if (completionBlock)
+                                                    completionBlock();
+                                            }];
+                             } else {
+                                 dispatch_async(dispatch_get_main_queue(), ^{
+                                     if (completionBlock) {
+                                         completionBlock();
+                                     }
+                                 });
+                             }
+                         }];
+        });
 }
 
 + (NSArray<NSString *> *) domains {
